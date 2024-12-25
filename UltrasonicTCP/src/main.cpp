@@ -7,6 +7,7 @@
 #include <ESPmDNS.h>
 #include <ESPUI.h>
 #include <EEPROM.h>
+#include <Arduino.h>
 #include "http_ota.h"
 
 WiFiManager wifiManager;
@@ -31,6 +32,7 @@ float speed_Of_Sound;          // Calculated speed of sound based on air temp
 float distance_Per_uSec;      // Distance sound travels in one microsecond
 float distanceAVG;
 int distan;
+float duration, distanceCm, distanceIn, distanceFt = 0;
 // circular Distance DATA
 const int DistanceBufferLength = 10;
 int DistanceBuffer[DistanceBufferLength];
@@ -287,7 +289,6 @@ void _initUltrasound(){
 
 void read_distance()
 {
-  float duration, distanceCm, distanceIn, distanceFt, distanceAVG = 0;
   unsigned long start_TIME, END_TIME, MY_TIME;
   start_TIME = millis();
 
@@ -338,7 +339,7 @@ void setup(){
 
   Serial.begin(115200);
   Project = "SmartPier";
-  FirmwareVer = "0.2";
+  FirmwareVer = "0.3";
   Serial.println("WiFi is connecting...");
   _initWiFiManager();
   Serial.println("WiFi is connected!");
@@ -369,10 +370,11 @@ void loop()
   const unsigned long time2OTA = periodOTA * 1000;
   if (currentMillis % time2send == 0){
     reConnection();
-    delay(1000);
+    delayMicroseconds(1000);
     read_distance();
-    holdingWrite(ClAddr, distan);
-    value++;
+    distanceCm *= 10;
+    holdingWrite(ClAddr, distanceCm);
+    //value++;
   }
 
   if (currentMillis % time2OTA == 0){
