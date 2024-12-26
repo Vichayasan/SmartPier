@@ -339,7 +339,7 @@ void setup(){
 
   Serial.begin(115200);
   Project = "SmartPier";
-  FirmwareVer = "0.3";
+  FirmwareVer = "0.4";
   Serial.println("WiFi is connecting...");
   _initWiFiManager();
   Serial.println("WiFi is connected!");
@@ -372,7 +372,6 @@ void loop()
     reConnection();
     delayMicroseconds(1000);
     read_distance();
-    distanceCm *= 10;
     holdingWrite(ClAddr, distanceCm);
     //value++;
   }
