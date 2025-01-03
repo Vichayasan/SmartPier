@@ -23,7 +23,7 @@
 #include <ESPUI.h>
 #include <ESPmDNS.h>
 
-#include <TaskScheduler.h>
+//#include <TaskScheduler.h>
 #include <http_ota.h>
 
 //#include "Adafruit_SGP30.h"
@@ -41,6 +41,14 @@
 #include <time.h>
 #include "Free_Fonts.h"
 
+#include <ArduinoModbus.h>
+
+WiFiClient wifiClient;
+PubSubClient client(wifiClient);
+WiFiManager wifiManager;
+ModbusTCPClient modbusTCPClient(wifiClient);
+IPAddress ip(192, 168, 0, 108);
+
 TaskHandle_t Task1;
 
 struct tm tmstruct;
@@ -51,7 +59,7 @@ struct tm timeinfo;
 #define _TASK_WDT_IDS
 #define _TASK_TIMECRITICAL
 
-Scheduler runner;
+//Scheduler runner;
 
 boolean readPMSdata(Stream *s);
 void composeJson();
@@ -68,6 +76,9 @@ void t3CallSendData();
 void t4CallPrintPMS7003();
 void t6OTA();
 void t7showTime();
+void enterConnectionCallback(Control *sender, int type);
+void eepromWrite();
+void holdingWrite(int address, uint16_t value);
 
 int periodSendTelemetry = 60;  //the value is a number of seconds
 
@@ -188,6 +199,10 @@ int _countFailed = 0;
 
 bool connectWifi = false;
 
+int TempAd, HumAd, PressAd;
+int PM1Ad, PM25Ad, PM10Ad;
+String ServAddress;
+
 String json = "";
 
 //ModbusMaster node;
@@ -198,16 +213,13 @@ uint16_t nameLabel, idLabel, cuationlabel, firmwarelabel, mainSwitcher, mainSlid
 uint16_t tempText, humText, humText2, saveConfigButton, interval ,emailText1;
 uint16_t pm01Text, pm25Text, pm10Text, pn03Text, pn05Text, pn10Text, pn25Text, pn50Text, pn100Text, lineText;
 uint16_t bmeLog, wifiLog, teleLog;
+uint16_t tempAddr, humAddr, pressAddr, pm1Addr, pm25Addr, pm10Addr, serverIP;
+uint16_t myIP;
 
 uint16_t graph;
 volatile bool updates = false;
 String email1 = "";
 String lineID = "";
-
-WiFiClient wifiClient;
-PubSubClient client(wifiClient);
-
-WiFiManager wifiManager;
 
 // Basic toggle test for i/o expansion. flips pin #0 of a MCP23008 i2c
 // pin expander up and down. Public domain
@@ -427,6 +439,9 @@ void printBME280Data()
   pres = bme.readFloatPressure();
   Serial.printf("Temp: %.2f, Hum: %.2f, Pres:: %.2f \n", temp, hum, pres);
   Serial.println("DebugprintEndBME280Data");
+  holdingWrite(TempAd, temp);
+  holdingWrite(HumAd, hum);
+  holdingWrite(PressAd, pres);
 }
 
 void _initSGP30 () {
@@ -484,9 +499,10 @@ void setUpUI() {
      This tab contains all the basic ESPUI controls, and shows how to read and update them at runtime.
     -----------------------------------------------------------------------------------------------------------*/
   auto maintab = ESPUI.addControl(Tab, "", "Home");
-  nameLabel = ESPUI.addControl(Label, "Device Name", "AIRMASS 2.5 VERSION 3.5", Emerald, maintab);
+  nameLabel = ESPUI.addControl(Label, "Device Name", String(Project), Emerald, maintab);
   idLabel = ESPUI.addControl(Label, "Device ID", String(deviceToken), Emerald, maintab);
   firmwarelabel = ESPUI.addControl(Label, "Firmware", String(FirmwareVer), Emerald, maintab);
+  myIP = ESPUI.addControl(Label, "IP Address", String(WiFi.localIP().toString()), Peterriver, maintab);
 
   auto settingTab = ESPUI.addControl(Tab, "", "Setting");
   cuationlabel = ESPUI.addControl(Label, "Cuation", "Offset will be divided by 100 after saving.", Emerald, settingTab);
@@ -530,6 +546,16 @@ void setUpUI() {
   ESPUI.addControl(Separator, "", "", None, settingTab);
   //  ESPUI.addControl(Button, "Refresh", "Refresh", Peterriver, settingTab, enterDetailsCallback);
   ESPUI.addControl(Button, "Save", "SAVE", Peterriver, settingTab, enterDetailsCallback);
+
+   auto network = ESPUI.addControl(Tab, "", "Connection");
+  serverIP = ESPUI.addControl(Text, "Server IP Adress", String(ServAddress), Peterriver, network, enterConnectionCallback);
+  tempAddr = ESPUI.addControl(Number, "Temperature Address", String(TempAd), Peterriver, network, enterConnectionCallback);
+  humAddr = ESPUI.addControl(Number, "Humidity Address", String(HumAd), Peterriver, network, enterConnectionCallback);
+  pressAddr = ESPUI.addControl(Number, "Pressure Address", String(PressAd), Peterriver, network, enterConnectionCallback);
+  pm1Addr = ESPUI.addControl(Number, "PM1 Address", String(PM1Ad), Peterriver, network, enterConnectionCallback);
+  pm25Addr = ESPUI.addControl(Number, "PM2.5 Address", String(PM25Ad), Peterriver, network, enterConnectionCallback);
+  pm10Addr = ESPUI.addControl(Number, "PM10 Address", String(PM10Ad), Peterriver, network, enterConnectionCallback);
+  ESPUI.addControl(Button, "Save", "SAVE", Dark, network, enterConnectionCallback);
   
   auto eventTab = ESPUI.addControl(Tab, "", "Event Log");
   ESPUI.addControl(Separator, "Error Log", "", None, eventTab);
@@ -541,6 +567,30 @@ void setUpUI() {
   ESPUI.begin(host2.c_str());
   
   }
+
+void enterConnectionCallback(Control *sender, int type) {
+  Serial.println(sender->value);
+  ESPUI.updateControl(sender);
+  if(type == B_UP) {
+    Serial.println("Saving Offset to EPROM...");
+    Control* address_ = ESPUI.getControl(serverIP);
+    Control* tempa_ = ESPUI.getControl(tempAddr);
+    Control* huma_ = ESPUI.getControl(humAddr);
+    Control* presa_ = ESPUI.getControl(pressAddr);
+    Control* pm1a_ = ESPUI.getControl(pm1Addr);
+    Control* pm25a_ = ESPUI.getControl(pm25Addr);
+    Control* pm10a_ = ESPUI.getControl(pm10Addr);
+    TempAd = tempa_->value.toInt();
+    HumAd = huma_->value.toInt();
+    PressAd = presa_->value.toInt();
+    PM1Ad = pm1a_->value.toInt();
+    PM25Ad = pm25a_->value.toInt();
+    PM10Ad = pm10a_->value.toInt();
+    ServAddress = address_->value.c_str();
+    ip.fromString(ServAddress);
+    eepromWrite();
+  }
+}
 
 void enterDetailsCallback(Control *sender, int type) {
   Serial.println(sender->value);
@@ -584,22 +634,28 @@ void enterDetailsCallback(Control *sender, int type) {
     periodSendTelemetry = periodSendTelemetry_->value.toInt();
     email1 = email1_->value;
     lineID = lineID_->value;
+    eepromWrite();
+    sendAttribute(); // Assuming this function is required to send attributes
+  }
+}
+
+void eepromWrite()
+{
     char data1[40];
     char data2[40];
     char data3[40];
     email1.toCharArray(data1, 40);  // Convert String to char array
     lineID.toCharArray(data2, 40);
-    deviceToken.toCharArray(data3, 40);
+    ServAddress.toCharArray(data3, 20);
+    //deviceToken.toCharArray(data3, 40);
     
     // Print to Serial
     Serial.println("put TempOffset: " + String(TempOffset));
     Serial.println("put HumOffset1: " + String(HumOffset1));
     Serial.println("put periodSendTelemetry: " + String(periodSendTelemetry));
     Serial.println("put email1: " + String(email1));
-
-
-    // Write to EEPROM
-    EEPROM.begin(180); // Ensure enough size for data
+  // Write to EEPROM
+    EEPROM.begin(200); // Ensure enough size for data
     int addr = 0;
   
     EEPROM.put(addr, TempOffset);
@@ -631,13 +687,38 @@ void enterDetailsCallback(Control *sender, int type) {
     addr += sizeof(VOCOffset);
     */
     EEPROM.put(addr, periodSendTelemetry);
-    //  addr += sizeof(periodSendTelemetry);
-    addr = 70;
+    addr += sizeof(periodSendTelemetry);
+
+    EEPROM.put(addr, TempAd);
+    addr += sizeof(TempAd);
+
+    EEPROM.put(addr, HumAd);
+    addr += sizeof(HumAd);
+
+    EEPROM.put(addr, PressAd);
+    addr += sizeof(PressAd);
+
+    EEPROM.put(addr, PM1Ad);
+    addr += sizeof(PM1Ad);
+
+    EEPROM.put(addr, PM25Ad);
+    addr += sizeof(PM25Ad);
+
+    EEPROM.put(addr, PM10Ad);
+    addr += sizeof(PM10Ad);
+
+    for (int len = 0; len < ServAddress.length(); len++) {
+      EEPROM.write(addr + len, data3[len]);  // Write each character
+    }
+    EEPROM.write(addr + ServAddress.length(), '\0');
+
+    //addr = 70;
     for (int len = 0; len < email1.length(); len++) {
       EEPROM.write(addr + len, data1[len]);  // Write each character
     }
     EEPROM.write(addr + email1.length(), '\0');  // Add null terminator at the end
-    addr = 110;
+    
+    //addr = 110;
     for (int len = 0; len < lineID.length(); len++) {
       EEPROM.write(addr + len, data2[len]);  // Write each character
     }
@@ -661,13 +742,11 @@ void enterDetailsCallback(Control *sender, int type) {
   }
   */
     EEPROM.end();
-    sendAttribute(); // Assuming this function is required to send attributes
-  }
 }
 
 void readEEPROM() {
   Serial.println("Reading credentials from EEPROM...");
-  EEPROM.begin(180); // Ensure enough size for data
+  EEPROM.begin(200); // Ensure enough size for data
   
   //Dubug Address
     /*
@@ -709,15 +788,42 @@ void readEEPROM() {
     addr += sizeof(VOCOffset);
     */
     EEPROM.get(addr, periodSendTelemetry);
-    //  addr += sizeof(periodSendTelemetry);
-    addr = 70;
+    addr += sizeof(periodSendTelemetry);
+
+    EEPROM.get(addr, TempAd);
+    addr += sizeof(TempAd);
+
+    EEPROM.get(addr, HumAd);
+    addr += sizeof(HumAd);
+
+    EEPROM.get(addr, PressAd);
+    addr += sizeof(PressAd);
+
+    EEPROM.get(addr, PM1Ad);
+    addr += sizeof(PM1Ad);
+
+    EEPROM.get(addr, PM25Ad);
+    addr += sizeof(PM25Ad);
+
+    EEPROM.get(addr, PM10Ad);
+    addr += sizeof(PM10Ad);
+
+    for (int len = 0; len < 20; len++){
+    char data1 = EEPROM.read(addr + len);
+    if (data1 == '\0' || data1 == 255)
+      break;
+    ServAddress += data1;
+    }
+    addr += sizeof(ServAddress);
+
+    //addr = 70;
     for (int len = 0; len < 50; len++){
       char data1 = EEPROM.read(addr + len);
       if(data1 == '\0' || data1 == 255) break;
       email1 += data1;
     }
-    //  addr += sizeof(email1);
-    addr = 110;
+    addr += sizeof(email1);
+    //addr = 110;
     for (int len = 0; len < 50; len++){
       char data2 = EEPROM.read(addr + len);
       if(data2 == '\0' || data2 == 255) break;
@@ -732,21 +838,23 @@ void readEEPROM() {
     }
     */
     EEPROM.end();
+    ip.fromString(ServAddress);
   // Print to Serial
   Serial.println("get TempOffset: " + String(TempOffset));
   Serial.println("get HumOffset1: " + String(HumOffset1));
   Serial.println("get periodSendTelemetry: " + String(periodSendTelemetry));
   Serial.println("get outputEmail1: " + String(email1));
+  Serial.println("Server IP: " + String(ServAddress));
 
-  pm01Offset = 0;
-  pm25Offset = 0;
-  pm10Offset = 0;
-  pn03Offset = 0;
-  pn05Offset = 0;
-  pn10Offset = 0;
-  pn25Offset = 0;
-  pn50Offset = 0;
-  pn100Offset = 0;
+  //pm01Offset = 0;
+  //pm25Offset = 0;
+  //pm10Offset = 0;
+  //pn03Offset = 0;
+  //pn05Offset = 0;
+  //pn10Offset = 0;
+  //pn25Offset = 0;
+  //pn50Offset = 0;
+  //pn100Offset = 0;
 
   ESPUI.updateNumber(tempText, TempOffset);
   ESPUI.updateNumber(humText, HumOffset1);
@@ -1047,6 +1155,10 @@ Serial.println("Start Loop t4CallPrintPMS7003");
   Serial.print("Particles > 10.0 um / 0.1L air:"); Serial.println(data.particles_100um);
   Serial.println("---------------------------------------");
 
+  holdingWrite(PM1Ad, data.pm01_env);
+  holdingWrite(PM25Ad, data.pm25_env);
+  holdingWrite(PM10Ad, data.pm100_env);
+
 }
 
 void heartBeat()
@@ -1240,8 +1352,6 @@ boolean readPMSdata(Stream *s) {
   return true;
 }
 
-
-
 void getMac()
 {
   byte mac[6];
@@ -1269,6 +1379,33 @@ void Task1code(void *pvParameters)
     heartBeat();
     vTaskDelay((120000) / portTICK_PERIOD_MS);
   }
+}
+
+void _initModbus()
+{
+  while(!modbusTCPClient.begin(ip)) {
+    Serial.println("Failed to connect Modbus TCP Server!");
+    delay(1000);
+  }
+  Serial.println("Modbus TCP Client connected");
+}
+
+void reConnectionSever() {
+  // Check for new client connections
+
+  if (!modbusTCPClient.connected()) {
+    Serial.println("Attempting to connect to Modbus TCP server");
+    _initModbus();
+
+  }
+}
+
+void holdingWrite(int address, uint16_t value)
+{
+  // Simulate a value for holding register 0
+  modbusTCPClient.holdingRegisterWrite(address, value);
+  Serial.printf("Register %d value: %d\n", address, value);
+  //delay(1000); // Update register every second
 }
 
 void setup() {
@@ -1328,6 +1465,10 @@ void setup() {
   _initBME280();
   _initSGP30();
   delay(1);
+
+  Serial.println("Start Modbus...");
+  _initModbus();
+  delayMicroseconds(1000);
   
   
   for (int i = 0; i < 1000; i++);
@@ -1364,6 +1505,7 @@ void loop() {
     }
     composeJson();
     delayMicroseconds(200000);
+    reConnectionSever();
   }
   if (currentMillis % 10000 == 0){
     t3CallSendData();
