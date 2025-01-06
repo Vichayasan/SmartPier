@@ -1290,7 +1290,7 @@ void readEEPROM() {
 void setup() {
   Serial.begin(115200);
   Project = "SmartPier";
-  FirmwareVer = 0.2;
+  FirmwareVer = 0.3;
 
   delay(500);
   pinMode(15, OUTPUT);
@@ -1394,6 +1394,7 @@ void setup() {
 void loop() {
   //ArduinoOTA.handle();
   //runner.execute();
+  //Serial.println("debug loop:" + String(periodSendTelemetry));
   const unsigned long currentMillis = millis();
   const unsigned long time2send = periodSendTelemetry * 1000;
   if (currentMillis % time2send == 0){
