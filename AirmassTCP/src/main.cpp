@@ -33,6 +33,7 @@
 #include <ESPmDNS.h>
 #include <ESPUI.h>
 #include "http_ota.h"
+#include <Arduino.h>
 
 //EEPROMClass  TVOCBASELINE("eeprom1", 0x200);
 //EEPROMClass  eCO2BASELINE("eeprom2", 0x100);
@@ -1289,7 +1290,7 @@ void readEEPROM() {
 void setup() {
   Serial.begin(115200);
   Project = "SmartPier";
-  FirmwareVer = 0.1;
+  FirmwareVer = 0.2;
 
   delay(500);
   pinMode(15, OUTPUT);
@@ -1371,6 +1372,7 @@ void setup() {
   //Serial.println("Debug setup 1");
   hostUI = "AirMassTCP:" + deviceToken;
   MDNS.begin(hostUI.c_str());
+  WiFi.mode(WIFI_AP_STA);
   WiFi.softAPConfig(IPAddress(192, 168, 1, 1), IPAddress(192, 168, 1, 1), IPAddress(255, 255, 255, 0));
   WiFi.softAP(hostUI.c_str());
   setUpUI();
