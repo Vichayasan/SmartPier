@@ -1,6 +1,4 @@
 #include <WiFiManager.h>
-#include <ArduinoModbus.h>
-//#include <ArduinoRS485.h>
 #include <SPI.h>
 #include <ArduinoJson.h>
 #include <EEPROM.h>
@@ -8,45 +6,55 @@
 #include "http_ota.h"
 #include <ESPmDNS.h>
 #include <Adafruit_MCP23008.h>
+#include <ESPAsyncWebServer.h>
+#include <ESPmDNS.h>
+#include <HTTPClient.h>
+#include <ModbusServerWiFi.h>
 
 WiFiManager wifiManager;
 WiFiClient wifiClient;
-WiFiClient client[3];
-WiFiServer wifiServer(502);
-ModbusTCPServer modbusTCPServer;
-ModbusTCPClient modbusTCPClient(wifiClient);
-IPAddress ip(192, 168, 0, 101);
 Adafruit_MCP23008 mcp;
+ModbusServerWiFi mb;
 
-String host = "ServerDemo";
+String host = "WifiManager:";
 String deviceToken = "";
+const char* deviceID;
+const char* nameID;
+const char* version;
 String ServAddress = "192.168.0.1";
 String localIP = "";
-String host2 = "";
+String hostUI;
 int ClAddr;
 // float value = 0;
 int periodSendTelemetry = 30;
 int TCPaddress = 3;
 int periodOTA = 60;
-float h1, h2, h3 = 0; 
+char h1[10], h2[10], h3[10]; 
 float avgh;
 int immersH, totalH, immersW;
 int lenght, width;
 int Density = 1000;
 //float Gravity = 981;
 int greenW, yellowW; //relay3,  relay2
-int greenH, yellowH;
-
+int greenH, yellowH ,redH;
 unsigned long previousMillis = 0;
 unsigned long readmillis = 0;
+unsigned long interupmillis = 0;
+int ar[3] = {0};
+int butPin = 25;
+int recon = 0;
+String url[3] = {""};
+uint16_t msg[6] = {0};
+int rssi = 0;
 
-float ar[3];
+String wifistat, httpstat;
 
 uint16_t nameLabel, idLabel, firmwarelabel, myIP;
 uint16_t clientAddr, serverIP;
 uint16_t interval, otaTime, hTotal, dens, grav, x, y;
 uint16_t greenAW, yellowAW, greenAH, yellowAH;
 uint16_t ul1, ul2, ul3;
+uint16_t wifiLog, httpbug, URL1, URL2, URL3, sig;
 
 void configModeCallback(WiFiManager *myWiFiManager);
 void enterConnectionCallback(Control *sender, int type);
@@ -56,12 +64,24 @@ void eepromRead();
 float avgHeight();
 void enterAlarmSetCallback(Control *sender, int type);
 
+struct tcp_pcb;
+extern struct tcp_pcb* tcp_tw_pcbs;
+extern "C" void tcp_abort(struct tcp_pcb* pcb);
+
+void tcpCleanup(void) {
+    while (tcp_tw_pcbs) {
+        tcp_abort(tcp_tw_pcbs);
+    }
+}
+
+
 void _initWiFiManager()
 {
   wifiManager.setAPCallback(configModeCallback);
   wifiManager.setConfigPortalTimeout(60); // auto close configportal after n seconds
   wifiManager.setAPClientCheck(true);      // avoid timeout if client connected to softap
   wifiManager.setBreakAfterConfig(true);   // always exit configportal even if wifi save fails
+  host.concat(String((uint32_t)ESP.getEfuseMac(), HEX));
   if (!wifiManager.autoConnect(host.c_str()))
   {
     Serial.println("failed to connect and hit timeout");
@@ -91,88 +111,26 @@ void printWifiStatus()
   Serial.println(localIP);
 
   // print the received signal strength:
-  long rssi = WiFi.RSSI();
+  rssi = WiFi.RSSI();
   Serial.print("signal strength (RSSI):");
   Serial.print(rssi);
   Serial.println(" dBm");
-}
-
-void _initModbusServ()
-{
-  if (!modbusTCPServer.begin(502)) {
-    Serial.println("Failed to start Modbus TCP Server!");
-    while (1);
-  }
-}
-
-void _initModbusClient()
-{
-  while(!modbusTCPClient.begin(ip)) {
-    Serial.println("Failed to connect Modbus TCP Server!");
-  }
-  Serial.println("Modbus TCP Client connected");
-}
-
-void modbusRegis( int IPadress, int NumBit)
-{
-  // Configure Modbus registers
-  modbusTCPServer.configureHoldingRegisters(IPadress, NumBit); // 10 holding registers
-  Serial.println("Modbus server ready.");
-}
-
-void reConnect2Client() 
-{
-  // Check for new client connections
-  WiFiClient client = wifiServer.available();
-
-  if (client) {
-    //Serial.println("New client connected");
-    
-    modbusTCPServer.accept(client); // Accept the client connection
-
-    // Optionally print the client's IP
-    Serial.printf("Client IP: %s\n", client.remoteIP().toString().c_str());
-  }
-
-  // Process Modbus requests from clients
-  modbusTCPServer.poll();
-}
-
-void reConnect2Serv() 
-{
-  // Check for new client connections
-  //_initModbusServ();
-
-  if (!modbusTCPClient.connected()) {
-    Serial.println("Attempting to connect to Modbus TCP server");
-    _initModbusClient();
-
-  }
-}
-
-void servRequest(int address)
-{
-  // Simulate a value for holding register 0
-  float value = modbusTCPServer.holdingRegisterRead(address);
-  Serial.printf("Register %d value: %2f\n", address, value);
-  //delayMicroseconds(1000); // Update register every second
-  ar[address] = value;
-
+  ESPUI.updateLabel(myIP, String(localIP));
+  ESPUI.updateLabel(sig, String(rssi));
 }
 
 float avgHeight()
 {
-  h1 = ar[1];
-  h2 = ar[2];
-  h3 = ar[3];
-  Serial.printf("h1: %2f, h2: %2f, h3: %2f\n", h1, h2 ,h3);
+  int H1 = ar[0];
+  int H2 = ar[1];
+  int H3 = ar[2];
+  Serial.printf("H1: %d, H2: %d, H3: %d\n", H1, H2 ,H3);
 
-  ESPUI.updateLabel(ul1, String(h1).c_str());
-  ESPUI.updateLabel(ul2, String(h2).c_str());
-  ESPUI.updateLabel(ul3, String(h3).c_str());
-
-  avgh = (h1 + h2 + h3) / 3;
+  avgh = (H1 + H2 + H3) / 3;
+  msg[1] = avgh;
   Serial.printf("Average Height: %2f\n", avgh);
+  Serial.printf("msg: %d\n", msg[0]);
+
   return avgh;
 }
 
@@ -193,37 +151,41 @@ float calBuoyancy()
 void EnableAlarm()
 {
   
-  if (immersW <= greenW || immersH <= greenH){
+  if ( avgh >= greenH){
+    mcp.digitalWrite(0, LOW);
+    mcp.digitalWrite(1, LOW);
     mcp.digitalWrite(2, HIGH);
+    mcp.digitalWrite(3, LOW);
+    Serial.printf("avgH: %f, Green: %d\n", avgh, greenH);
   }
 
   //yellow
-  else if (immersW <= yellowW || immersH <= yellowH){
+  else if ( avgh >= yellowH && avgh <= greenH){
+    mcp.digitalWrite(0, LOW);
     mcp.digitalWrite(1, HIGH);
+    mcp.digitalWrite(2, LOW);
+    mcp.digitalWrite(3, LOW);
+    Serial.printf("avgH: %f, yellow: %d\n", avgh, yellowH);
   }
 
   //red = relay1 pin0
   else{
     mcp.digitalWrite(0, HIGH);
-    //mcp.digitalWrite(3, HIGH);
+    mcp.digitalWrite(1, LOW);
+    mcp.digitalWrite(2, LOW);
+    mcp.digitalWrite(3, HIGH);
+    Serial.printf("avgH: %f, RED!\n", avgh);
   }
 }
 
-void holdingWrite(int address, uint16_t value)
-{
-  // Simulate a value for holding register 0
-  modbusTCPClient.holdingRegisterWrite(address, value);
-  Serial.printf("Register %d value: %d\n", address, value);
-  //delay(1000); // Update register every second
-}
 
 void _initUI(){
-  host2 = "AlarmTCP" + deviceToken;
+  hostUI = "AlarmTCP" + deviceToken;
   //host2 = "SmartPeir";
-  MDNS.begin(host2.c_str());
+  // MDNS.begin(hostUI.c_str());
   //WiFi.mode(WIFI_MODE_AP);
   WiFi.softAPConfig(IPAddress(192, 168, 1, 1), IPAddress(192, 168, 1, 1), IPAddress(255, 255, 255, 0));
-  WiFi.softAP(host2.c_str());
+  WiFi.softAP(hostUI.c_str());
   //Finally, start up the UI.
   //This should only be called once we are connected to WiFi.
   
@@ -232,6 +194,7 @@ void _initUI(){
 void setUpUI() {
   Serial.println("Start UI");
 
+  tcpCleanup();
   //Turn off verbose  ging
   ESPUI.setVerbosity(Verbosity::Quiet);
 
@@ -250,18 +213,18 @@ void setUpUI() {
     -----------------------------------------------------------------------------------------------------------*/
   auto maintab = ESPUI.addControl(Tab, "", "Home");
   nameLabel = ESPUI.addControl(Label, "Device Name", String(Project), Peterriver, maintab);
-  idLabel = ESPUI.addControl(Label, "Device ID", String(deviceToken), Peterriver, maintab);
+  idLabel = ESPUI.addControl(Label, "Device ID", String(deviceID), Peterriver, maintab);
   firmwarelabel = ESPUI.addControl(Label, "Firmware Version", String(FirmwareVer), Peterriver, maintab);
   myIP = ESPUI.addControl(Label, "IP Address", String(localIP), Peterriver, maintab);
 
   auto network = ESPUI.addControl(Tab, "", "Connection");
-  serverIP = ESPUI.addControl(Text, "Server IP Adress", String(ServAddress), Peterriver, network, enterConnectionCallback);
-  clientAddr = ESPUI.addControl(Number, "Client Address", String(ClAddr), Peterriver, network, enterConnectionCallback);
+  // serverIP = ESPUI.addControl(Text, "Server IP Adress", String(ServAddress), Peterriver, network, enterConnectionCallback);
+  clientAddr = ESPUI.addControl(Number, "Server ID", String(ClAddr), Peterriver, network, enterConnectionCallback);
   ESPUI.addControl(Button, "Save", "SAVE", Dark, network, enterConnectionCallback);
 
   auto alarmset = ESPUI.addControl(Tab, "", "Alarm");
   ESPUI.addControl(Separator, "Height Configuration","", None, alarmset);
-  greenAH = ESPUI.addControl(Number, "Maximum of Red Level(cm)", String(greenH), Peterriver, alarmset, enterAlarmSetCallback);
+  greenAH = ESPUI.addControl(Number, "Maximum of Green Level(cm)", String(greenH), Peterriver, alarmset, enterAlarmSetCallback);
   yellowAH = ESPUI.addControl(Number, "Maximum of Yellow Level(cm)", String(yellowW), Peterriver, alarmset, enterAlarmSetCallback);
   ESPUI.addControl(Separator, "Weight Configuration","", None, alarmset);
   greenAW = ESPUI.addControl(Number, "Maximum of Green Level(kg)", String(greenW), Peterriver, alarmset, enterAlarmSetCallback);
@@ -279,12 +242,23 @@ void setUpUI() {
   ESPUI.addControl(Button, "Save", "SAVE", Dark, setting, enterSettingCallback);
 
   auto log = ESPUI.addControl(Tab, "", "Log");
-  ul1 = ESPUI.addControl(Label, "Ultrasonic Device 1", String(h1), Peterriver, log);
-  ul2 = ESPUI.addControl(Label, "Ultrasonic Device 2", String(h2), Peterriver, log);
-  ul3 = ESPUI.addControl(Label, "Ultrasonic Device 3", String(h3), Peterriver, log);
+  URL1 = ESPUI.addControl(Label, "Ultrasonic URL 1", String(url[0]), Peterriver, log);
+  URL2 = ESPUI.addControl(Label, "Ultrasonic URL 2", String(url[1]), Peterriver, log);
+  URL3 = ESPUI.addControl(Label, "Ultrasonic URL 3", String(url[2]), Peterriver, log);
+  ESPUI.addControl(Separator, "", "", None, log);
+  ul1 = ESPUI.addControl(Label, "Ultrasonic Device 1 (cm)", String(h1), Peterriver, log);
+  ul2 = ESPUI.addControl(Label, "Ultrasonic Device 2 (cm)", String(h2), Peterriver, log);
+  ul3 = ESPUI.addControl(Label, "Ultrasonic Device 3 (cm)", String(h3), Peterriver, log);
+
+  auto debug = ESPUI.addControl(Tab, "", "Debug");
+  ESPUI.addControl(Separator, "Error Log", "", None, debug);
+  wifiLog = ESPUI.addControl(Label, "WiFi Connection Status", String(wifistat), Alizarin, debug);
+  httpbug = ESPUI.addControl(Label, "Http Client Connection Status", String(httpstat), Alizarin, debug);
+  sig = ESPUI.addControl(Label, "RSSI", String(rssi), Alizarin, debug);
+  // ESPUI.WebServer()->begin(8000);
 
   Serial.println("End UI");
-  String hostUI = "AlarmTCP" + deviceToken;
+  // String hostUI = "AlarmTCP" + deviceToken;
   ESPUI.begin(hostUI.c_str());
 
 }
@@ -345,6 +319,8 @@ void enterAlarmSetCallback(Control *sender, int type){
     yellowW = yellW_->value.toInt();
     greenH = grH_->value.toInt();
     yellowH = yellH_->value.toInt();
+    Serial.println("green from UI: " + String(greenH));
+    Serial.println("yellow from UI: " + String(yellowH));
    
     eepromWrite();
   }
@@ -403,7 +379,7 @@ void eepromWrite(){
   Serial.println("End write to EEPROM");
 }
 
-void eepromRead(){
+void eepromRead() {
   Serial.println("Reading credentials from EEPROM...");
   EEPROM.begin(200); // Ensure enough size for data
   int addr = 0;
@@ -438,42 +414,31 @@ void eepromRead(){
   EEPROM.get(addr, yellowH);
   addr += sizeof(yellowH);
 
-  // for (int len = 0; len < 20; len++){
+  // for (int len = 0; len < 20; len++) {
   //   char data1 = EEPROM.read(addr + len);
-  //   Serial.println("data1: " +  String(EEPROM.read(addr + len)));
-  //   if (data1 == '\0' || data1 == 255 || data1 == 20 || data1 == 0)
+  //   if (data1 == '\0' || data1 == (char)255 || data1 == (char)20) // Skip unwanted characters
   //     break;
   //   ServAddress += data1;
   // }
-  // addr += sizeof(ServAddress);
 
-  // for (int len = 0; len < 50; len++){
-  //     char data3 = EEPROM.read(addr + len);
-  //     Serial.println("data3: " +  String(EEPROM.read(addr + len)));
-  //     if(data3 == '\0' || data3 == 255 || data3 == 20 || data3 == 0) break;
-  //     deviceToken += data3;
-  //   }
-  
   EEPROM.end();
 
-  if (periodSendTelemetry == 255 || periodSendTelemetry == -1){
-    periodOTA = 30;
+  if (periodSendTelemetry == 255 || periodSendTelemetry == -1) {
     periodSendTelemetry = 60;
   }
 
-  // ip.fromString(ServAddress);
-
   // Print to Serial
   Serial.println("----- Read EEPROM Storage value by ESPUI -----");
-  Serial.println("Server Address: "+ String(ServAddress));
+  Serial.println("Server Address: " + String(ServAddress));
   Serial.printf("periodSendTelemetry: %d\n", periodSendTelemetry);
   Serial.printf("periodOTA: %d\n", periodOTA);
   Serial.printf("Total Height: %d\n", totalH);
   Serial.printf("lenght: %d\n", lenght);
   Serial.printf("width: %d\n", width);
-  Serial,printf("DeviceID: %d\n", deviceToken);
+  Serial.printf("DeviceID: %d\n", deviceToken);
+  Serial.printf("Geen: %d\n", greenH);
 
-  // ESPUI.updateText(serverIP, String(ServAddress));
+  ESPUI.updateText(serverIP, String(ServAddress));
   ESPUI.updateNumber(clientAddr, ClAddr);
   ESPUI.updateNumber(interval, periodSendTelemetry);
   ESPUI.updateNumber(otaTime, periodOTA);
@@ -484,8 +449,8 @@ void eepromRead(){
   ESPUI.updateNumber(yellowAW, yellowW);
   ESPUI.updateNumber(greenAH, greenAH);
   ESPUI.updateNumber(yellowAH, yellowH);
-
 }
+
 
 void getMac()
 {
@@ -501,7 +466,8 @@ void getMac()
     deviceToken += String(mac[i], HEX); // Convert byte to hex
   }
   deviceToken.toUpperCase();
-  ESPUI.updateLabel(idLabel, String(deviceToken));
+  deviceID = deviceToken.c_str();
+  ESPUI.updateLabel(idLabel, deviceID);
 }
 
 void _initMCP()
@@ -513,13 +479,91 @@ void _initMCP()
   mcp.pinMode(3, OUTPUT);
 }
 
+void DisAlarm()
+{
+  int buttonStat;
+  buttonStat = digitalRead(butPin);
+  Serial.println("butstat:" + String(buttonStat));
+  if (buttonStat == 1){
+    mcp.digitalWrite(3, LOW);
+    Serial.println("Disable Alarm");
+  }
+  
+}
+
+void log() {
+  // // Convert floats in ar[] to strings and copy them to h1, h2, and h3
+  // snprintf(h1, sizeof(h1), "%d", (int)ar[1]); // Format ar[1] to 2 decimal places
+  // snprintf(h2, sizeof(h2), "%d", (int)ar[2]);
+  // snprintf(h3, sizeof(h3), "%d", (int)ar[3]);
+
+  // Update ESPUI labels
+  ESPUI.updateLabel(ul1, String(ar[0])); // ESPUI accepts `const char*`, so h1 works
+  ESPUI.updateLabel(ul2, String(ar[1]));
+  ESPUI.updateLabel(ul3, String(ar[2]));
+
+  Serial.println("debug log");
+  Serial.printf("h1: %d, h2: %d, h3: %d\n", ar[0], ar[1], ar[2]); // For debugging
+}
+
+// Worker function for serverID=1, function code 0x03 or 0x04
+ModbusMessage FC03(ModbusMessage request) {
+  uint16_t addr = 0;        // Start address to read
+  uint16_t wrds = 5;        // Number of words to read
+  ModbusMessage response;
+  // Debug: Log the received request
+  Serial.println("FC03 called: processing request...");
+  Serial.printf("Request Server ID: %d, Function Code: 0x%02X\n", request.getServerID(), request.getFunctionCode());
+
+  // Get addr and words from data array. Values are MSB-first, get() will convert to binary
+  request.get(2, addr);
+  request.get(4, wrds);
+  
+  // address valid?
+  if (!addr || addr > 128) {
+    // No. Return error response
+    response.setError(request.getServerID(), request.getFunctionCode(), ILLEGAL_DATA_ADDRESS);
+    return response;
+  }
+
+  // Modbus address is 1..n, memory address 0..n-1
+  addr--;
+
+  // Number of words valid?
+  if (!wrds || (addr + wrds) > 127) {
+    // No. Return error response
+    response.setError(request.getServerID(), request.getFunctionCode(), ILLEGAL_DATA_ADDRESS);
+    return response;
+  }
+
+  // Prepare response
+  response.add(request.getServerID(), request.getFunctionCode(), (uint8_t)(wrds * 2));
+
+  // Loop over all words to be sent
+  for (uint16_t i = 0; i < wrds; i++) {
+    // Add word MSB-first to response buffer
+    response.add(msg[addr + i]);
+    Serial.printf("Adding Value to Response: Address %d, Value: %d\n", addr + i + 1, msg[addr + i]);
+  }
+
+  // Return the data response
+  return response;
+}
+
 void setup(){
 
   Serial.begin(115200);
   Project = "SmartPier";
-  FirmwareVer = 0.0;
+  FirmwareVer = "0.0.1";
 
-  //wifiManager.resetSettings();
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
+  // pinMode(15, OUTPUT);
+  // digitalWrite(15, HIGH);
+  
+  // pinMode(butPin, INPUT);
+
+  // wifiManager.resetSettings();
 
   Serial.println("WiFi is connecting...");
   _initWiFiManager();
@@ -531,24 +575,7 @@ void setup(){
 
   getMac();
 
-  delayMicroseconds(300000);
-  _initUI();
-  setUpUI();
-  delayMicroseconds(300000);
-
   eepromRead();
-
-  wifiServer.begin();
-
-  Serial.println("Start Modbus Server...");
-  _initModbusServ();
-
-  modbusRegis(0, 30);
-  
-
-  Serial.println("Start Modbus Client...");
-  _initModbusClient();
-  delayMicroseconds(1000);
 
   _initMCP();
 
@@ -563,70 +590,155 @@ void setup(){
   }
   OTA_git_CALL();
 
+  delayMicroseconds(3000000);
+  _initUI();
+  setUpUI();
+  delayMicroseconds(3000000);
+
+  if(mdns_init()!= ESP_OK){
+    Serial.println("mDNS failed to start");
+    return;
+  } else {
+    Serial.println("mDNS Started");
+  }
+
+  int nrOfServices = MDNS.queryService("http", "tcp");
+   
+  if (nrOfServices == 0) {
+      Serial.println("No services were found.");
+  }
+  int j = 0;
+  
+  for (int i = 0; i < nrOfServices; i=i+1) {
+   // print service information
+   Serial.print("Hostname ");
+   Serial.println(i);
+   Serial.println(MDNS.hostname(i));
+   if (MDNS.hostname(i).indexOf("smartpeir") != -1){
+    url[j] = "http://" + MDNS.hostname(i) + ".local:3000";
+    Serial.println("url:" + url[i]);
+    j++;
+   }
+  }
+
+  ESPUI.updateLabel(URL1, String(url[0]));
+  ESPUI.updateLabel(URL2, String(url[1]));
+  ESPUI.updateLabel(URL3, String(url[2]));
+
+  nameID = Project.c_str();
+  version = FirmwareVer.c_str();
+  ESPUI.updateLabel(nameLabel, String(nameID));
+  ESPUI.updateLabel(firmwarelabel, String(version));
+
+  // Start the Modbus TCP server:
+  // Port number 502, maximum of 4 clients in parallel, 10 seconds timeout
+  mb.start(502, 4, 120000);
+
 }
 
 void loop()
 {
-  //unsigned long currentMillis = millis();
+  unsigned long currentMillis = millis();
+  static unsigned long httpmillis = 0;
+  //Serial.print(".");
 
-  Serial.print(".");
-  WiFiClient newClient = wifiServer.available();
-    if (newClient) {
-    // a new client connected
-      Serial.println("new client");
+  if (WiFi.status() != WL_CONNECTED) {
+      Serial.println("Wi-Fi disconnected! Attempting to reconnect...");
+      WiFi.reconnect();
+      if (WiFi.status() == WL_CONNECTED) {
+        wifistat = "Connected to Wi-Fi!";
+        Serial.println(wifistat);
+        ESPUI.updateLabel(wifiLog, String(wifistat));
+        Serial.printf("New IP Address: %s\n", WiFi.localIP().toString().c_str());
+        ESPUI.updateLabel( myIP, String(WiFi.localIP().toString()));
 
-      Serial.println("debug 1");
-      // let the Modbus TCP accept the connection 
-      
-      Serial.println("debug 2");
-      for (int i = 0; i < 3; i++){
-        modbusTCPServer.accept(newClient);
-        //if (client[i].connected()) {
-        client[i] = newClient;
-        Serial.printf("Client added to slot %d. IP: %s\n", i, newClient.remoteIP().toString().c_str());
-        //delayMicroseconds(1000000);
-        //break;
-        //}
+        if(mdns_init()!= ESP_OK){
+            Serial.println("mDNS failed to start");
+            return;
+          } else {
+            Serial.println("mDNS Started");
+          }
 
+          int nrOfServices = MDNS.queryService("http", "tcp");
+          
+          if (nrOfServices == 0) {
+              Serial.println("No services were found.");
+          }
+          int j = 0;
+          
+          for (int i = 0; i < nrOfServices; i=i+1) {
+          // print service information
+          Serial.print("Hostname ");
+          Serial.println(i);
+          Serial.println(MDNS.hostname(i));
+          if (MDNS.hostname(i).indexOf("smartpeir") != -1){
+            url[j] = "http://" + MDNS.hostname(i) + ".local:3000";
+            Serial.println("url:" + url[i]);
+            j++;
+          }
+          }
+
+        recon = 0;
+      } else {
+        recon++;
+        wifistat = "Failed to reconnect to Wi-Fi.";
+        Serial.println(wifistat);
+        ESPUI.updateLabel(wifiLog, String(wifistat));
+        delayMicroseconds(1000000);
+        if (recon == 60){
+          ESP.restart();
+        }
       }
 
-      for (int i = 0; i < 3; i++){
-        modbusTCPServer.accept(client[i]);
-          if (client[i].connected()){
-            // poll for Modbus TCP requests, while client connected
-            Serial.println("debug 3");
-            modbusTCPServer.poll();
-            Serial.println("debug 4");
-            // update the LED
-            for (int i = 0; i <= TCPaddress; i++){
-              servRequest(i);
-              delayMicroseconds(50000);
-            }
-            Serial.printf("\n");
-          //value++;
+  }
+
+  if (currentMillis - httpmillis > 1000){
+    httpmillis = currentMillis;
+      if (WiFi.status() == WL_CONNECTED){
+        HTTPClient http;
+        for (int i = 0; i < 3; i++){
+          // Serial.println("Check i= " + String(i));
+          if (url[i].equals("")){
+            break;
+          }
+          http.begin(url[i].c_str());
+
+          // Send HTTP GET request
+          int httpResponseCode = http.GET();
+          
+          if (httpResponseCode>0) {
+            // Serial.print("HTTP Response code: ");
+            // Serial.println(httpResponseCode);
+            String payload = http.getString();
+            // Serial.println(payload);
+            ar[i] = payload.toInt();
+          }
+          else {
+            Serial.print("Error code: ");
+            Serial.println(httpResponseCode);
+            ESPUI.updateLabel(httpbug, String(httpResponseCode));
+          }
+          // Free resources
+          http.end();
         }
-    }
-    }
-    static unsigned long readmillis =0;    
-  if (millis() - readmillis > 10000){
-    readmillis = millis();
+      }
+  }
+
+  mb.registerWorker(ClAddr, READ_HOLD_REGISTER, &FC03);
+
+  if (currentMillis - readmillis > 5000){
+    readmillis = currentMillis;
     avgHeight();
     calHeight();
     //calBuoyancy();
     EnableAlarm();
   }
-  // delay(1000);
 
-  // if (!modbusTCPClient.connected()) {
-  //   Serial.println("Attempting to connect to Modbus TCP server");
-  //   _initModbusClient();
-
-  // }
-
-  // if(currentMillis - previousMillis >= periodSendTelemetry * 1000){
-  //   previousMillis = currentMillis;
-  //   reConnect2Serv();
-  //   holdingWrite(ClAddr, immersW);
-  // }
+  if (currentMillis - interupmillis > 60000){
+    interupmillis = currentMillis;
+    log();
+    rssi = WiFi.RSSI();
+    ESPUI.updateLabel(sig, String(rssi));
+  }
    
 }
